@@ -1,0 +1,6 @@
+
+# Ignore Xcode project/test folders if they appear untracked during rebase
+FarmSense.xcodeproj/
+FarmSenseTests/
+FarmSenseUITests/
+
