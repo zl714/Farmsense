@@ -4,3 +4,11 @@ FarmSense.xcodeproj/
 FarmSenseTests/
 FarmSenseUITests/
 
+
+# macOS
+.DS_Store
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+
