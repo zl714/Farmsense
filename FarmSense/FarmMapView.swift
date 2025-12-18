@@ -1,4 +1,3 @@
-// FarmMapView.swift
 import SwiftUI
 import MapKit
 
@@ -6,25 +5,21 @@ struct FarmMapView: UIViewRepresentable {
 
     @Binding var region: MKCoordinateRegion
     @Binding var fields: [MoistureMapView.FieldPolygon]
-
     @Binding var isTracingField: Bool
     @Binding var tracedCoordinates: [CLLocationCoordinate2D]
 
+    // NEW: color of the live trace line
     var traceColor: Color
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
-        context.coordinator.mapView = map
-
         map.delegate = context.coordinator
         map.setRegion(region, animated: false)
-        map.mapType = .standard
-        map.isRotateEnabled = false
 
         let capture = TraceCaptureView()
+        capture.coordinator = context.coordinator
         capture.backgroundColor = .clear
         capture.isUserInteractionEnabled = false
-        capture.coordinator = context.coordinator
 
         map.addSubview(capture)
         capture.translatesAutoresizingMaskIntoConstraints = false
@@ -35,6 +30,7 @@ struct FarmMapView: UIViewRepresentable {
             capture.trailingAnchor.constraint(equalTo: map.trailingAnchor)
         ])
 
+        context.coordinator.mapView = map
         context.coordinator.captureView = capture
 
         return map
@@ -42,56 +38,22 @@ struct FarmMapView: UIViewRepresentable {
 
     func updateUIView(_ map: MKMapView, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.mapView = map
-
-        if let capture = context.coordinator.captureView {
-            map.bringSubviewToFront(capture)
-            capture.isUserInteractionEnabled = isTracingField
-        }
-
-        if !isTracingField {
-            let centerDiff =
-                abs(map.region.center.latitude - region.center.latitude) > 0.000001 ||
-                abs(map.region.center.longitude - region.center.longitude) > 0.000001
-            if centerDiff {
-                map.setRegion(region, animated: true)
-            }
-        }
-
-        map.isScrollEnabled = !isTracingField
-        map.isZoomEnabled = !isTracingField
-        map.isRotateEnabled = !isTracingField
-        map.isPitchEnabled = !isTracingField
+        context.coordinator.captureView?.isUserInteractionEnabled = isTracingField
 
         map.removeOverlays(map.overlays)
-        map.removeAnnotations(map.annotations)
         context.coordinator.polygonColors.removeAll()
 
+        // Field polygons with per-field colors
         for field in fields {
-            let polygon = MKPolygon(
-                coordinates: field.coordinates,
-                count: field.coordinates.count
-            )
-            polygon.title = field.name
-            polygon.subtitle = field.moistureStatus
+            let polygon = MKPolygon(coordinates: field.coordinates, count: field.coordinates.count)
             context.coordinator.polygonColors[polygon] = UIColor(field.color)
             map.addOverlay(polygon)
-
-            if let center = context.coordinator.centroid(of: field.coordinates) {
-                let pin = MKPointAnnotation()
-                pin.title = field.name
-                pin.subtitle = field.moistureStatus
-                pin.coordinate = center
-                map.addAnnotation(pin)
-            }
         }
 
+        // Live trace line with selected status color
         if tracedCoordinates.count > 1 {
-            let line = MKPolyline(
-                coordinates: tracedCoordinates,
-                count: tracedCoordinates.count
-            )
-            context.coordinator.traceUIColor = UIColor(traceColor)
+            let line = MKPolyline(coordinates: tracedCoordinates, count: tracedCoordinates.count)
+            context.coordinator.traceLineColor = UIColor(traceColor)
             map.addOverlay(line)
         }
     }
@@ -101,92 +63,56 @@ struct FarmMapView: UIViewRepresentable {
     }
 
     class Coordinator: NSObject, MKMapViewDelegate {
-
         var parent: FarmMapView
         weak var mapView: MKMapView?
         weak var captureView: TraceCaptureView?
 
         var polygonColors: [MKPolygon: UIColor] = [:]
-        var traceUIColor: UIColor = .systemBlue
-        private var lastAddedCoord: CLLocationCoordinate2D?
+        var traceLineColor: UIColor = .systemBlue
 
         init(_ parent: FarmMapView) {
             self.parent = parent
         }
 
-        func addTracePoint(fromScreenPoint point: CGPoint) {
-            guard parent.isTracingField, let mapView = mapView else { return }
-
-            let coord = mapView.convert(point, toCoordinateFrom: mapView)
-
-            if let last = lastAddedCoord {
-                let dLat = abs(coord.latitude - last.latitude)
-                let dLon = abs(coord.longitude - last.longitude)
-                if dLat < 0.00002 && dLon < 0.00002 { return }
-            }
-
+        func addTracePoint(from point: CGPoint) {
+            guard parent.isTracingField, let map = mapView else { return }
+            let coord = map.convert(point, toCoordinateFrom: map)
             parent.tracedCoordinates.append(coord)
-            lastAddedCoord = coord
-        }
-
-        func endTraceStroke() {
-            lastAddedCoord = nil
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
 
             if let polyline = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: polyline)
-                r.strokeColor = traceUIColor.withAlphaComponent(0.9)
+                r.strokeColor = traceLineColor.withAlphaComponent(0.95)
+                r.lineWidth = 3
+                return r
+            }
+
+            if let polygon = overlay as? MKPolygon {
+                let r = MKPolygonRenderer(polygon: polygon)
+                let c = polygonColors[polygon] ?? .systemGreen
+                r.fillColor = c.withAlphaComponent(0.18)
+                r.strokeColor = c.withAlphaComponent(0.8)
                 r.lineWidth = 2
                 return r
             }
 
-            guard let polygon = overlay as? MKPolygon else {
-                return MKOverlayRenderer(overlay: overlay)
-            }
-
-            let renderer = MKPolygonRenderer(polygon: polygon)
-            let color = polygonColors[polygon] ?? .systemGreen
-            renderer.strokeColor = color.withAlphaComponent(0.65)
-            renderer.fillColor = color.withAlphaComponent(0.12)
-            renderer.lineWidth = 3
-            return renderer
-        }
-
-        func centroid(of coords: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
-            guard !coords.isEmpty else { return nil }
-            let sumLat = coords.reduce(0.0) { $0 + $1.latitude }
-            let sumLon = coords.reduce(0.0) { $0 + $1.longitude }
-            return CLLocationCoordinate2D(
-                latitude: sumLat / Double(coords.count),
-                longitude: sumLon / Double(coords.count)
-            )
+            return MKOverlayRenderer(overlay: overlay)
         }
     }
 }
 
 final class TraceCaptureView: UIView {
-
     weak var coordinator: FarmMapView.Coordinator?
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let t = touches.first else { return }
-        let p = t.location(in: self)
-        coordinator?.addTracePoint(fromScreenPoint: p)
+        coordinator?.addTracePoint(from: t.location(in: self))
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let t = touches.first else { return }
-        let p = t.location(in: self)
-        coordinator?.addTracePoint(fromScreenPoint: p)
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        coordinator?.endTraceStroke()
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        coordinator?.endTraceStroke()
+        coordinator?.addTracePoint(from: t.location(in: self))
     }
 }
